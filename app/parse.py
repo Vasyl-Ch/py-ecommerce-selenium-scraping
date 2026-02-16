@@ -9,8 +9,11 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException
+from selenium.webdriver.support import expected_conditions as es
+from selenium.common.exceptions import (
+    TimeoutException,
+    ElementClickInterceptedException
+)
 
 BASE_URL = "https://webscraper.io/"
 URLS = [
@@ -56,7 +59,7 @@ def expand_dynamic_content(driver: WebDriver, locator: str) -> None:
     while True:
         try:
             button = WebDriverWait(driver, 2).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, locator))
+                es.presence_of_element_located((By.CSS_SELECTOR, locator))
             )
             if not button.is_displayed():
                 break
@@ -99,8 +102,8 @@ def write_products_to_csv(products: list[Product], filename: str) -> None:
         writer = csv.DictWriter(file, fieldnames=PRODUCT_FIELDS)
         writer.writeheader()
 
-        for p in products:
-            writer.writerow(asdict(p))
+        for product in products:
+            writer.writerow(asdict(product))
 
 
 def get_all_products() -> None:
