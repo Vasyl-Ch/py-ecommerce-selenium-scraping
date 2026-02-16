@@ -9,10 +9,11 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as es
+from selenium.webdriver.support import expected_conditions as ec
 from selenium.common.exceptions import (
     TimeoutException,
-    ElementClickInterceptedException
+    ElementClickInterceptedException,
+    StaleElementReferenceException,
 )
 
 BASE_URL = "https://webscraper.io/"
@@ -55,33 +56,103 @@ logging.basicConfig(
 )
 
 
-def expand_dynamic_content(driver: WebDriver, locator: str) -> None:
-    while True:
-        try:
-            button = WebDriverWait(driver, 2).until(
-                es.presence_of_element_located((By.CSS_SELECTOR, locator))
+def accept_cookies_if_present(driver: WebDriver) -> None:
+    try:
+        button = WebDriverWait(driver, 3).until(
+            ec.element_to_be_clickable(
+                (
+                    By.CSS_SELECTOR,
+                    "button.accept,"
+                    "button#accept,"
+                    ".cookie-accept"
+                )
             )
-            if not button.is_displayed():
-                break
+        )
+        button.click()
+        logging.info("Cookie banner accepted")
+    except TimeoutException:
+        pass
+
+
+def expand_dynamic_content(
+        driver: WebDriver,
+        button_selector: str,
+        items_selector: str = ".thumbnail",
+        max_clicks: int = 20,
+) -> None:
+    clicks = 0
+
+    while clicks < max_clicks:
+        try:
+            items_before = len(
+                driver.find_elements(By.CSS_SELECTOR, items_selector)
+            )
+
+            button = WebDriverWait(driver, 5).until(
+                ec.element_to_be_clickable((By.CSS_SELECTOR, button_selector))
+            )
+
             driver.execute_script("arguments[0].click();", button)
-        except (TimeoutException, ElementClickInterceptedException):
+
+            WebDriverWait(driver, 5).until(
+                lambda d: len(
+                    d.find_elements(By.CSS_SELECTOR, items_selector)
+                ) > items_before
+            )
+
+            clicks += 1
+
+        except TimeoutException:
             break
+        except (
+                ElementClickInterceptedException,
+                StaleElementReferenceException
+        ):
+            logging.warning(
+                "Retrying load-more click after interception/stale element"
+            )
+            continue
+
+
+def safe_text(tag: Tag | None) -> str:
+    return " ".join(tag.text.split()) if tag else ""
+
+
+def safe_float(text: str) -> float:
+    try:
+        return float(text.replace("$", "").replace(",", "").strip())
+    except ValueError:
+        return 0.0
+
+
+def safe_int(text: str) -> int:
+    try:
+        return int(text.strip())
+    except ValueError:
+        return 0
 
 
 def parse_single_product(product_tag: Tag) -> Product:
     title_elem = product_tag.select_one(".title")
-    title = title_elem["title"] if title_elem else "No Title"
+    if title_elem and title_elem.has_attr("title"):
+        title = title_elem["title"]
+    else:
+        title = "No title"
 
-    description = " ".join(product_tag.select_one(".description").text.split())
-    price = float(product_tag.select_one(".price").text.replace("$", ""))
+    description = safe_text(product_tag.select_one(".description"))
+
+    price_elem = product_tag.select_one(".price")
+    price = safe_float(price_elem.text) if price_elem else 0.0
 
     rating_elem = product_tag.select_one("p[data-rating]")
-    rating = int(rating_elem["data-rating"]) if rating_elem else len(
-        product_tag.select(".ws-icon-star")
-    )
+    if rating_elem and rating_elem.has_attr("data-rating"):
+        rating = safe_int(rating_elem["data-rating"])
+    else:
+        rating = len(product_tag.select(".ws-icon-star"))
 
-    num_of_reviews = int(
-        product_tag.select_one(".review-count").text.split()[0]
+    reviews_elem = product_tag.select_one(".review-count")
+    num_of_reviews = (
+        safe_int(reviews_elem.text.split()[0]) if reviews_elem else 0
     )
 
     return Product(
@@ -101,7 +172,6 @@ def write_products_to_csv(products: list[Product], filename: str) -> None:
     with open(filename, "w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=PRODUCT_FIELDS)
         writer.writeheader()
-
         for product in products:
             writer.writerow(asdict(product))
 
@@ -110,24 +180,26 @@ def get_all_products() -> None:
     options = webdriver.ChromeOptions()
     # options.add_argument("--headless")
 
-    with webdriver.Chrome(options=options) as driver:
+    with (webdriver.Chrome(options=options) as driver):
         set_driver(driver)
 
         for url in URLS:
             logging.info(f"Processing category: {url}")
             driver.get(url)
 
-            expand_dynamic_content(driver, "a.ecomerce-items-scroll-more")
+            accept_cookies_if_present(driver)
+
+            expand_dynamic_content(
+                driver,
+                button_selector="a.ecomerce-items-scroll-more",
+            )
 
             soup = BeautifulSoup(driver.page_source, "html.parser")
             product_tags = soup.select(".thumbnail")
 
-            products = [
-                parse_single_product(tag)
-                for tag in product_tags
-            ]
+            products = [parse_single_product(tag) for tag in product_tags]
 
-            if url.endswith("/more") or url.endswith("/more/"):
+            if url.rstrip("/").endswith("/more"):
                 name = "home"
             else:
                 name = url.rstrip("/").split("/")[-1]
